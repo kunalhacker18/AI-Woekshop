@@ -1,0 +1,340 @@
+  /*
+AI-Finance-Dashboard — Single-file React component (Tailwind + recharts)
+
+What this file includes (starter front-end):
+- Dashboard layout (top nav, side nav, main content)
+- Expense list with automated categorization (mocked rule-based + placeholder for ML API)
+- Predictive spending chart (historical + forecast using a simple local linear forecast as placeholder)
+- Goal tracker UI with progress bars
+- Budget alerts UI showing triggered alerts and simulated websocket subscription
+- Sample API helper functions calling backend endpoints (/api/expenses, /api/predict, /api/goals, /api/alerts)
+
+Notes on backend + ML (see bottom comments for schema & pipeline):
+- Backend: FastAPI (Python) or Node/Express for APIs; serve ML predictions from a separate /predict endpoint.
+- DB: PostgreSQL recommended (time-series friendly); add Redis for caching & Celery/RQ for background retraining.
+- ML: use LightGBM / XGBoost or Prophet for forecasting aggregated spend by category. Serve with FastAPI + Docker.
+
+To use: drop this into a React app (Next.js or CRA). Tailwind must be available. Recharts is used for charts (npm i recharts).
+
+*/
+
+import React, { useEffect, useState, useRef } from "react";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+} from "recharts";
+
+// Mock helpers (replace with real API calls)
+async function fetchExpenses() {
+  // Replace with: const r = await fetch('/api/expenses'); return await r.json();
+  return Promise.resolve({
+    userId: "user_123",
+    expenses: [
+      { id: 1, ts: "2025-08-01", amount: 45.2, merchant: "Starbucks", raw: "coffee", category: null },
+      { id: 2, ts: "2025-08-03", amount: 120.0, merchant: "Amazon", raw: "gadget", category: null },
+      { id: 3, ts: "2025-08-10", amount: 600.0, merchant: "RentCo", raw: "rent", category: "Housing" },
+      { id: 4, ts: "2025-09-02", amount: 15.0, merchant: "Local Grocer", raw: "milk", category: null },
+    ],
+  });
+}
+
+async function callCategorizationAPI(rawText) {
+  // Example: call to /api/categorize with {text: rawText}
+  // Here we implement a tiny deterministic rule-based fallback so the UI works offline.
+  const rules = [
+    { kws: ["rent", "broker"], cat: "Housing" },
+    { kws: ["uber", "ola", "taxi"], cat: "Transport" },
+    { kws: ["coffee", "starbucks", "cafe"], cat: "Food & Drink" },
+    { kws: ["amazon", "flipkart", "gadget"], cat: "Shopping" },
+    { kws: ["milk", "grocer", "grocery"], cat: "Groceries" },
+  ];
+  const t = rawText.toLowerCase();
+  for (const r of rules) {
+    for (const k of r.kws) if (t.includes(k)) return r.cat;
+  }
+  return "Uncategorized";
+}
+
+async function fetchPredictiveData() {
+  // Replace with: await fetch('/api/predict')
+  // Return aggregated monthly spend + forecast points
+  return Promise.resolve({
+    series: [
+      { month: "2025-01", total: 1200 },
+      { month: "2025-02", total: 980 },
+      { month: "2025-03", total: 1100 },
+      { month: "2025-04", total: 1050 },
+      { month: "2025-05", total: 1150 },
+      { month: "2025-06", total: 1300 },
+      { month: "2025-07", total: 1250 },
+      { month: "2025-08", total: 1400 },
+      { month: "2025-09", total: 1500 },
+      // forecast
+      { month: "2025-10", total: 1550, forecast: true },
+      { month: "2025-11", total: 1600, forecast: true },
+      { month: "2025-12", total: 1620, forecast: true },
+    ],
+  });
+}
+
+async function fetchGoals() {
+  return Promise.resolve({
+    goals: [
+      { id: "g1", title: "Emergency Fund", target: 5000, saved: 2300 },
+      { id: "g2", title: "New Laptop", target: 1500, saved: 200 },
+    ],
+  });
+}
+
+async function fetchAlerts() {
+  return Promise.resolve({ alerts: [{ id: "a1", text: "You exceeded Food & Drink budget in Sep 2025", level: "warning" }] });
+}
+
+export default function AIFinanceDashboard() {
+  const [expenses, setExpenses] = useState([]);
+  const [predSeries, setPredSeries] = useState([]);
+  const [goals, setGoals] = useState([]);
+  const [alerts, setAlerts] = useState([]);
+  const wsRef = useRef(null);
+
+  useEffect(() => {
+    async function load() {
+      const e = await fetchExpenses();
+      // categorize
+      const catPromises = e.expenses.map(async (it) => {
+        if (it.category) return { ...it };
+        const cat = await callCategorizationAPI(it.raw + " " + it.merchant);
+        return { ...it, category: cat };
+      });
+      const withCats = await Promise.all(catPromises);
+      setExpenses(withCats);
+
+      const p = await fetchPredictiveData();
+      setPredSeries(p.series);
+
+      const g = await fetchGoals();
+      setGoals(g.goals);
+
+      const a = await fetchAlerts();
+      setAlerts(a.alerts);
+    }
+    load();
+
+    // Simulated websocket for alerts (replace with real WS endpoint)
+    wsRef.current = setInterval(() => {
+      // every 30s simulate an incoming alert
+      // In prod: use WebSocket and setAlerts(prev => [newAlert, ...prev])
+    }, 30000);
+
+    return () => clearInterval(wsRef.current);
+  }, []);
+
+  // Helpers
+  const totalRecent = expenses.reduce((s, e) => s + e.amount, 0).toFixed(2);
+
+  // Build chart data (map months to label)
+  const chartData = predSeries.map((d) => ({
+    name: d.month,
+    total: d.total,
+    forecast: d.forecast ? d.total : undefined,
+  }));
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-6">
+      <header className="mb-6">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-semibold">AI Finance Manager</h1>
+          <div className="text-sm text-slate-600">Welcome back — here's your financial snapshot</div>
+        </div>
+      </header>
+
+      <main className="grid grid-cols-12 gap-6">
+        {/* Left column */}
+        <section className="col-span-8">
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <div className="p-4 bg-white rounded-2xl shadow-sm">
+              <div className="text-sm text-slate-500">Recent spend</div>
+              <div className="text-2xl font-bold">₹{totalRecent}</div>
+              <div className="text-xs text-slate-400 mt-2">Last updated: Sep 13, 2025</div>
+            </div>
+
+            <div className="p-4 bg-white rounded-2xl shadow-sm">
+              <div className="text-sm text-slate-500">Top category</div>
+              <div className="text-2xl font-bold">Housing</div>
+              <div className="text-xs text-slate-400 mt-2">Based on last 3 months</div>
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl shadow-sm mb-4">
+            <h2 className="font-medium mb-3">Spending forecast</h2>
+            <div style={{ height: 300 }}>
+              <ResponsiveContainer>
+                <LineChart data={chartData} margin={{ top: 8, right: 24, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="total" stroke="#8884d8" dot={false} />
+                  {/* forecast area */}
+                  <Area type="monotone" dataKey="forecast" stroke="#82ca9d" fillOpacity={0.2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="text-xs text-slate-500 mt-2">Forecast generated by model v1.0 — retrain frequency: weekly</div>
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl shadow-sm">
+            <h2 className="font-medium mb-3">Expenses</h2>
+            <div className="divide-y divide-slate-100">
+              {expenses.map((ex) => (
+                <div key={ex.id} className="py-3 flex items-center justify-between">
+                  <div>
+                    <div className="font-medium">{ex.merchant}</div>
+                    <div className="text-xs text-slate-400">{ex.ts} · {ex.raw}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-semibold">₹{ex.amount}</div>
+                    <div className="text-xs text-slate-400">{ex.category}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* Right column */}
+        <aside className="col-span-4">
+          <div className="bg-white p-4 rounded-2xl shadow-sm mb-4">
+            <h3 className="font-medium mb-2">Goals</h3>
+            <div className="space-y-3">
+              {goals.map((g) => {
+                const pct = Math.min(100, Math.round((g.saved / g.target) * 100));
+                return (
+                  <div key={g.id}>
+                    <div className="flex justify-between text-sm mb-1">
+                      <div>{g.title}</div>
+                      <div>₹{g.saved} / ₹{g.target}</div>
+                    </div>
+                    <div className="w-full bg-slate-100 h-3 rounded-full overflow-hidden">
+                      <div className="h-3 rounded-full" style={{ width: `${pct}%`, background: 'linear-gradient(90deg,#7c3aed,#06b6d4)' }} />
+                    </div>
+                    <div className="text-xs text-slate-400 mt-1">{pct}%</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl shadow-sm mb-4">
+            <h3 className="font-medium mb-2">Budget alerts</h3>
+            <div className="space-y-2">
+              {alerts.map((a) => (
+                <div key={a.id} className="text-sm p-2 rounded-lg bg-amber-50">{a.text}</div>
+              ))}
+              {alerts.length === 0 && <div className="text-xs text-slate-400">No alerts</div>}
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl shadow-sm">
+            <h3 className="font-medium mb-2">Actions</h3>
+            <div className="flex flex-col gap-2">
+              <button className="py-2 rounded-xl border">Add manual expense</button>
+              <button className="py-2 rounded-xl bg-indigo-600 text-white">Create goal</button>
+              <button className="py-2 rounded-xl border">Run predictive recalculation</button>
+            </div>
+          </div>
+        </aside>
+      </main>
+
+      <footer className="mt-6 text-xs text-slate-400">Built with a starter AI pipeline — connect your backend to /api/* endpoints to enable live data.</footer>
+    </div>
+  );
+}
+
+/*
+-------------------------------------------------------------
+Backend & ML blueprint (copy into README or separate doc)
+-------------------------------------------------------------
+Database schema (Postgres - simplified):
+
+TABLE users (
+  id UUID PRIMARY KEY,
+  email TEXT UNIQUE,
+  name TEXT,
+  created_at TIMESTAMP
+);
+
+TABLE expenses (
+  id BIGSERIAL PRIMARY KEY,
+  user_id UUID REFERENCES users(id),
+  ts DATE,
+  amount NUMERIC(10,2),
+  merchant TEXT,
+  raw_text TEXT,
+  category TEXT,
+  created_at TIMESTAMP DEFAULT now()
+);
+
+TABLE categories (
+  id SERIAL PRIMARY KEY,
+  name TEXT UNIQUE
+);
+
+TABLE goals (
+  id UUID PRIMARY KEY,
+  user_id UUID,
+  title TEXT,
+  target NUMERIC,
+  saved NUMERIC,
+  due_date DATE
+);
+
+TABLE alerts (
+  id UUID PRIMARY KEY,
+  user_id UUID,
+  text TEXT,
+  level TEXT,
+  triggered_at TIMESTAMP
+);
+
+ML pipeline (training + serving):
+1. Feature engineering: aggregate per-user per-category monthly totals; create lag features (1,2,3 months), month-of-year, trend, rolling mean.
+2. Model choices:
+   - Demand forecasting: Prophet (fast) or LightGBM (more accurate with engineered features)
+   - If real-time personalization, consider neural seq2seq or Transformer on long history.
+3. Training: schedule weekly retrain using Airflow/Celery; store model artifact (versioned) in S3.
+4. Serving: FastAPI endpoint /predict that loads latest model and returns N-step forecast by category.
+5. Explainability: return SHAP values for top drivers in each prediction.
+6. Monitoring: data drift monitors, prediction error tracking, and automated alerts for model degradation.
+
+Endpoints (suggested):
+- GET /api/expenses?user_id=... -> returns recent expenses
+- POST /api/expenses -> create expense (body: ts, amount, merchant, raw)
+- POST /api/categorize -> returns category for given text (calls ML classification model)
+- GET /api/predict?user_id=... -> returns aggregated monthly series + forecast
+- GET /api/goals?user_id=...
+- POST /api/alerts/ack -> acknowledge an alert
+
+Deployment notes:
+- Containerize backend + model server. Use Docker Compose for dev, Kubernetes (EKS/GKE) for prod.
+- Use HTTPS, OAuth2 for auth (NextAuth or Auth0), and encrypt sensitive fields.
+- Add rate-limiting for /predict and caching at CDN or Redis.
+
+Privacy & Security:
+- Tokenize or hash PII in analytics pipelines.
+- Allow users to opt out of model training using their data.
+
+Next steps you can ask me to produce (I can generate in this conversation):
+- Full backend scaffold (FastAPI) with endpoints and DB migrations
+- ML training notebook (Python) with example aggregated dataset and LightGBM baseline
+- Docker Compose + Terraform config for infra
+- End-to-end tests and CI config
+
+*/
